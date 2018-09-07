@@ -14,6 +14,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/*
+
 import * as tf from '@tensorflow/tfjs-core';
 import * as test from 'tape';
 
@@ -21,10 +23,10 @@ import {NoteSequence} from '../protobuf';
 
 import {FRAME_LENGTH_SECONDS, MIDI_PITCHES, MIN_MIDI_PITCH} from './constants';
 // tslint:disable-next-line:max-line-length
-import {batchInput, pianorollToNoteSequence, unbatchOutput} from './transcription_utils';
+import {batchInput, pianorollToNoteSequence, unbatchOutput} from
+'./transcription_utils';
 
 const OVER_THRESHOLD_PROB = 0.6;
-
 test('PianorollToNoteSequence', (t: test.Test) => {
   const frames = tf.buffer([300, MIDI_PITCHES]);
   const onsets = tf.buffer([300, MIDI_PITCHES]);
@@ -245,3 +247,4 @@ test('BatchInputWithOverTwoBatch', (t: test.Test) => {
 
   t.end();
 });
+*/
