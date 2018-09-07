@@ -33,14 +33,20 @@ const LSTM_UNITS = 128;
 /**
  * Helper function to create a Bidirecitonal LSTM layer.
  */
-function getLstm() {
-  return tf.layers.lstmCell(
-      {units: LSTM_UNITS, recurrentActivation: 'sigmoid', trainable: false});
+function getLstm(inputShape: number[]) {
+  const m = tf.sequential();
+  m.add(tf.layers.lstmCell({
+    inputShape,
+    units: LSTM_UNITS,
+    recurrentActivation: 'sigmoid',
+    trainable: false
+  }));
+  return m;
 }
 
 function runBidiLstm(
-    inputs: tf.Tensor2D[], fwCell: tf.layers.RNNCell, bwCell: tf.layers.RNNCell,
-    outputDense: tf.layers.Layer) {
+    inputs: tf.Tensor2D[], fwCell: tf.Sequential, bwCell: tf.Sequential,
+    outputDense: tf.Sequential) {
   const fwOuts: tf.Tensor2D[] = [];
   const bwOuts: tf.Tensor2D[] = [];
   let fwStates =
@@ -48,10 +54,15 @@ function runBidiLstm(
   let bwStates =
       [tf.zeros([1, LSTM_UNITS]), tf.zeros([1, LSTM_UNITS])] as tf.Tensor2D[];
   for (let i = 0; i < inputs.length; ++i) {
-    let res = fwCell.call([inputs[i]].concat(fwStates), {}) as tf.Tensor2D[];
+    if (i % 100 === 0) {
+      console.log(i);
+    }
+    let res = fwCell.layers[0].call(
+                  [inputs[i], fwStates[0], fwStates[1]], {}) as tf.Tensor2D[];
     fwStates = res.slice(1) as tf.Tensor2D[];
     fwOuts.push(res[0]);
-    res = bwCell.call([inputs[inputs.length - i - 1]].concat(bwStates), {}) as
+    res = bwCell.layers[0].call(
+              [inputs[inputs.length - i - 1], bwStates[0], bwStates[1]], {}) as
         tf.Tensor2D[];
     bwStates = res.slice(1);
     bwOuts.push(res[0]);
@@ -60,7 +71,7 @@ function runBidiLstm(
   const outputs: tf.Tensor2D[] = [];
   for (let i = 0; i < inputs.length; ++i) {
     outputs.push(
-        outputDense.call(
+        outputDense.layers[0].call(
             tf.concat2d([fwOuts[i], bwOuts[inputs.length - i - 1]], -1), {}) as
         tf.Tensor2D);
   }
@@ -76,13 +87,13 @@ export class OnsetsAndFrames {
   private initialized: boolean;
 
   private onsetsCnn: tf.Sequential;
-  private onsetsFw: tf.layers.RNNCell;
-  private onsetsBw: tf.layers.RNNCell;
-  private onsetsDense: tf.layers.Layer;
+  private onsetsFw: tf.Sequential;
+  private onsetsBw: tf.Sequential;
+  private onsetsDense: tf.Sequential;
   private activationCnn: tf.Sequential;
-  private frameFw: tf.layers.RNNCell;
-  private frameBw: tf.layers.RNNCell;
-  private frameDense: tf.layers.Layer;
+  private frameFw: tf.Sequential;
+  private frameBw: tf.Sequential;
+  private frameDense: tf.Sequential;
   private velocityCnn: tf.Sequential;
 
   /**
@@ -104,7 +115,7 @@ export class OnsetsAndFrames {
    * @param warmup Whether to warm up the model by passing through a zero input.
    * Will make subsequent calls faster.
    */
-  async initialize(warmup = true) {
+  async initialize(warmup = false) {
     this.dispose();
 
     const vars = await fetch(`${this.checkpointURL}/weights_manifest.json`)
@@ -175,9 +186,11 @@ export class OnsetsAndFrames {
     const ns = pianorollToNoteSequence(
         frameProbs as tf.Tensor2D[], onsetProbs as tf.Tensor2D[],
         velocities as tf.Tensor2D[]);
+    /*
     frameProbs.forEach(t => t.dispose());
     onsetProbs.forEach(t => t.dispose());
     velocities.forEach(t => t.dispose());
+    */
     return ns;
   }
 
@@ -284,35 +297,6 @@ export class OnsetsAndFrames {
       ];
     }
 
-    function lstmWeights(scope: string) {
-      // The gate ordering differs in Keras.
-      const reorderGates = ((weights: tf.Tensor, forgetBias = 0) => {
-        const [i, c, f, o] = tf.split(weights, 4, -1);
-        return tf.concat([i, f.add(tf.scalar(forgetBias)), c, o], -1);
-      });
-      // The kernel is split into the input and recurrent kernels in Keras.
-      const splitAndReorderKernel =
-          ((kernel: tf.Tensor2D) => tf.split(
-               reorderGates(kernel) as tf.Tensor2D,
-               [kernel.shape[0] - LSTM_UNITS, LSTM_UNITS]));
-
-      const [fwKernel, fwRecurrentKernel] = splitAndReorderKernel(
-          getVar(`${scope}/bidirectional_rnn/fw/lstm_cell/kernel`) as
-          tf.Tensor2D);
-
-      const [bwKernel, bwRecurrentKernel] = splitAndReorderKernel(
-          getVar(`${scope}/bidirectional_rnn/bw/lstm_cell/kernel`) as
-          tf.Tensor2D);
-      return [
-        fwKernel, fwRecurrentKernel,
-        reorderGates(
-            getVar(`${scope}/bidirectional_rnn/fw/lstm_cell/bias`), 1.0),
-        bwKernel, bwRecurrentKernel,
-        reorderGates(
-            getVar(`${scope}/bidirectional_rnn/bw/lstm_cell/bias`), 1.0)
-      ];
-    }
-
     function lstmUniWeights(scope: string, dir: string) {
       // The gate ordering differs in Keras.
       const reorderGates = ((weights: tf.Tensor, forgetBias = 0) => {
@@ -348,13 +332,18 @@ export class OnsetsAndFrames {
       onsetsCnn.setWeights(convWeights('onsets'));
       this.onsetsCnn = onsetsCnn;
 
-      this.onsetsFw = getLstm();
+      this.onsetsFw = getLstm(onsetsCnn.outputShape.slice(1) as number[]);
       this.onsetsFw.setWeights(lstmUniWeights('onsets', 'fw'));
-      this.onsetsBw = getLstm();
+      this.onsetsBw = getLstm(onsetsCnn.outputShape.slice(1) as number[]);
       this.onsetsBw.setWeights(lstmUniWeights('onsets', 'bw'));
-      this.onsetsDense = tf.layers.dense(
-          {units: MIDI_PITCHES, activation: 'sigmoid', trainable: false});
-      this.onsetsDense.setWeights(lstmWeights('onsets'));
+      this.onsetsDense = tf.sequential();
+      this.onsetsDense.add(tf.layers.dense({
+        inputShape: [LSTM_UNITS * 2],
+        units: MIDI_PITCHES,
+        activation: 'sigmoid',
+        trainable: false
+      }));
+      this.onsetsDense.setWeights(denseWeights('onsets/onset_probs'));
 
       const activationCnn = this.getAcousticCnn();
       activationCnn.add(tf.layers.dense(
@@ -365,13 +354,18 @@ export class OnsetsAndFrames {
 
       // Frame RNN takes concatenated ouputs of onsetsRnn and activationCnn
       // as its inputs.
-      this.frameFw = getLstm();
+      this.frameFw = getLstm([2 * MIDI_PITCHES]);
       this.frameFw.setWeights(lstmUniWeights('frame', 'fw'));
-      this.frameBw = getLstm();
+      this.frameBw = getLstm([2 * MIDI_PITCHES]);
       this.frameBw.setWeights(lstmUniWeights('frame', 'bw'));
-      this.frameDense = tf.layers.dense(
-          {units: MIDI_PITCHES, activation: 'sigmoid', trainable: false});
-      this.frameDense.setWeights(lstmWeights('frame/frame_probs'));
+      this.frameDense = tf.sequential();
+      this.frameDense.add(tf.layers.dense({
+        inputShape: [LSTM_UNITS * 2],
+        units: MIDI_PITCHES,
+        activation: 'sigmoid',
+        trainable: false
+      }));
+      this.frameDense.setWeights(denseWeights('frame/frame_probs'));
 
       const velocityCnn = this.getAcousticCnn();
       velocityCnn.add(tf.layers.dense(
